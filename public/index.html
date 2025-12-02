@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>森林多人聊天室</title>
+    <link rel="stylesheet" href="/css/style.css">
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+    <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+</head>
+<body>
+    <div id="login-screen">
+        <div class="login-box">
+            <h2>🌲 森林聊天室 🌲</h2>
+            <input type="text" id="nickname-input" placeholder="请输入你的名字" maxlength="8">
+            <div class="avatar-options">
+                <div class="avatar-option selected" data-type="pig">🐷 小猪</div>
+                <div class="avatar-option" data-type="rabbit">🐰 兔子</div>
+                <div class="avatar-option" data-type="cat">🐱 猫咪</div>
+                <div class="avatar-option" data-type="dog">🐶 小狗</div>
+            </div>
+            <button id="start-game-btn">进入森林</button>
+        </div>
+    </div>
+
+    <div id="instructions">多人联机模式 | WASD 移动/空格跳跃 | 回车聊天</div>
+    <div id="chat-container">
+        <input type="text" id="chat-input" placeholder="输入文字..." autocomplete="off">
+        <button id="send-btn">发送</button>
+    </div>
+
+    <script type="module" src="/js/main.js"></script>
+</body>
+</html>

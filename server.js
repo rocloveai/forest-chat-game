@@ -7,7 +7,12 @@ const io = new Server(server);
 const path = require('path');
 
 // 托管静态文件 (HTML, CSS, JS)
-app.use(express.static(path.join(__dirname, '.')));
+app.use(express.static(path.join(__dirname, 'public')));
+
+// 确保根路径返回 index.html
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
 
 // 存储所有在线玩家的数据
 // 格式: { socketId: { x: 0, z: 0, id: 'socketId' } }
@@ -16,23 +21,46 @@ const players = {};
 io.on('connection', (socket) => {
     console.log('新玩家连接:', socket.id);
 
-    // 1. 初始化新玩家
+    // 1. 初始化新玩家 (连接时只给 ID，不给坐标，等 joinGame 再给)
     players[socket.id] = {
         id: socket.id,
-        x: 0, // 初始 X
-        z: 0, // 初始 Z
-        color: Math.random() * 0xffffff // 随机分配一个颜色
+        x: 0, 
+        z: 0,
+        color: Math.random() * 0xffffff,
+        name: "Player",
+        modelType: "robot",
+        isJoined: false // 标记是否已进入游戏
     };
 
-    // 2. 发送当前所有已存在的玩家给新加入者
-    socket.emit('currentPlayers', players);
+    // 2. 发送当前所有 *已加入游戏* 的玩家给新连接者
+    // (过滤掉那些还在登录界面的)
+    const joinedPlayers = {};
+    Object.keys(players).forEach(id => {
+        if(players[id].isJoined) joinedPlayers[id] = players[id];
+    });
+    socket.emit('currentPlayers', joinedPlayers);
 
-    // 3. 广播给其他玩家：有新人来了
-    socket.broadcast.emit('newPlayer', players[socket.id]);
+    // 注意：不再这里自动广播 newPlayer，而是等 joinGame 事件触发时才广播
+
+    // --- 监听：玩家点击开始游戏 ---
+    socket.on('joinGame', (data) => {
+        console.log(`玩家 ${socket.id} 加入游戏: ${data.name}`);
+        if (players[socket.id]) {
+            players[socket.id].name = data.name || "Unknown";
+            players[socket.id].modelType = data.type || "robot";
+            players[socket.id].isJoined = true;
+            // 随机一个出生点
+            players[socket.id].x = (Math.random() - 0.5) * 10;
+            players[socket.id].z = (Math.random() - 0.5) * 10;
+
+            // 关键修正：告诉所有人（包括自己）：有一个新玩家生成了
+            io.emit('newPlayer', players[socket.id]);
+        }
+    });
 
     // 4. 监听：玩家移动
     socket.on('playerMove', (movementData) => {
-        if (players[socket.id]) {
+        if (players[socket.id] && players[socket.id].isJoined) {
             players[socket.id].x = movementData.x;
             players[socket.id].z = movementData.z;
             // 广播给其他人
