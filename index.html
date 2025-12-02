@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>森林多人聊天室</title>
+    <style>
+        body { margin: 0; overflow: hidden; }
+        canvas { display: block; }
+        #instructions {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            font-family: Arial, sans-serif;
+            border-radius: 5px;
+            user-select: none;
+            pointer-events: none;
+        }
+        /* --- 聊天 UI --- */
+        #chat-container {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 10px;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 10px;
+        }
+        #chat-input {
+            width: 300px;
+            padding: 8px;
+            border: none;
+            border-radius: 5px;
+            outline: none;
+        }
+        #send-btn {
+            padding: 8px 15px;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        #send-btn:hover { background: #45a049; }
+
+        /* --- 气泡 --- */
+        .bubble {
+            position: absolute;
+            background: white;
+            padding: 5px 10px;
+            border-radius: 10px;
+            font-family: Arial, sans-serif;
+            font-size: 12px;
+            color: #333;
+            pointer-events: none;
+            transform: translate(-50%, -100%);
+            white-space: nowrap;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            z-index: 100;
+        }
+        .bubble::after {
+            content: '';
+            position: absolute;
+            bottom: -6px;
+            left: 50%;
+            transform: translateX(-50%);
+            border-width: 6px 6px 0;
+            border-style: solid;
+            border-color: white transparent transparent transparent;
+        }
+    </style>
+    <!-- Import Map for Three.js -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+            }
+        }
+    </script>
+    <!-- 引入 Socket.IO 客户端库 -->
+    <script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+    <div id="instructions">
+        多人联机模式 | WASD 移动 | 回车聊天
+    </div>
+
+    <div id="chat-container">
+        <input type="text" id="chat-input" placeholder="输入文字..." autocomplete="off">
+        <button id="send-btn">发送</button>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // --- 全局变量 ---
+        let scene, camera, renderer;
+        let myPlayer; // 我自己的模型
+        const otherPlayers = {}; // 存储其他玩家: { id: mesh }
+        const playerBubbles = {}; // 存储所有玩家的气泡: { id: bubbleElement }
+        
+        const moveSpeed = 0.1;
+        const keys = { w: false, a: false, s: false, d: false };
+        const cameraOffset = new THREE.Vector3(0, 5, 8); 
+
+        // Socket.io 连接
+        const socket = io();
+        let myId = null;
+
+        init();
+        animate();
+
+        function init() {
+            // 1. 场景
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB);
+            scene.fog = new THREE.Fog(0x87CEEB, 10, 50);
+
+            // 2. 相机
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            
+            // 3. 渲染器
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
+
+            // 4. 灯光
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            dirLight.position.set(10, 20, 10);
+            dirLight.castShadow = true;
+            scene.add(dirLight);
+
+            // 5. 地面
+            const ground = new THREE.Mesh(
+                new THREE.PlaneGeometry(100, 100), 
+                new THREE.MeshLambertMaterial({ color: 0x4caf50 })
+            );
+            ground.rotation.x = -Math.PI / 2;
+            ground.receiveShadow = true;
+            scene.add(ground);
+
+            // 6. 生成森林 (纯装饰)
+            generateForest(20);
+
+            // 7. 初始化我自己的模型 (先不加到场景，等连接成功再显示)
+            myPlayer = createPlayerMesh(0xff0000); 
+            // 先加进去，方便逻辑统一，初始位置 0,0
+            scene.add(myPlayer);
+
+            // --- 输入事件 ---
+            setupInputs();
+            
+            // --- Socket.IO 事件监听 ---
+            
+            socket.on('connect', () => {
+                myId = socket.id;
+                console.log('已连接服务器, My ID:', myId);
+            });
+
+            // 接收所有当前在线玩家
+            socket.on('currentPlayers', (players) => {
+                Object.keys(players).forEach((id) => {
+                    if (id === myId) {
+                        // 是我自己，更新我的颜色
+                        myPlayer.material.color.setHex(players[id].color);
+                    } else {
+                        // 是别人，创建新模型
+                        addOtherPlayer(players[id]);
+                    }
+                });
+            });
+
+            // 有新玩家加入
+            socket.on('newPlayer', (playerInfo) => {
+                addOtherPlayer(playerInfo);
+            });
+
+            // 玩家移动
+            socket.on('playerMoved', (playerInfo) => {
+                const other = otherPlayers[playerInfo.id];
+                if (other) {
+                    other.position.set(playerInfo.x, 0.5, playerInfo.z);
+                }
+            });
+
+            // 玩家断开
+            socket.on('disconnectPlayer', (id) => {
+                if (otherPlayers[id]) {
+                    scene.remove(otherPlayers[id]);
+                    delete otherPlayers[id];
+                }
+                // 移除对应的气泡
+                if (playerBubbles[id]) {
+                    playerBubbles[id].element.remove();
+                    delete playerBubbles[id];
+                }
+            });
+
+            // 接收聊天
+            socket.on('chatMessage', (data) => {
+                showBubble(data.id, data.text);
+            });
+
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        // 创建玩家模型 (通用函数)
+        function createPlayerMesh(color) {
+            const mesh = new THREE.Mesh(
+                new THREE.BoxGeometry(1, 1, 1),
+                new THREE.MeshLambertMaterial({ color: color })
+            );
+            mesh.position.y = 0.5;
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            return mesh;
+        }
+
+        function addOtherPlayer(playerInfo) {
+            const otherMesh = createPlayerMesh(playerInfo.color);
+            otherMesh.position.set(playerInfo.x, 0.5, playerInfo.z);
+            scene.add(otherMesh);
+            otherPlayers[playerInfo.id] = otherMesh;
+        }
+
+        function setupInputs() {
+            document.addEventListener('keydown', (e) => {
+                if (document.activeElement === document.getElementById('chat-input')) {
+                    if (e.key === 'Enter') sendMessage();
+                    return;
+                }
+                const key = e.key.toLowerCase();
+                if (keys.hasOwnProperty(key)) keys[key] = true;
+            });
+            document.addEventListener('keyup', (e) => {
+                const key = e.key.toLowerCase();
+                if (keys.hasOwnProperty(key)) keys[key] = false;
+            });
+            document.getElementById('send-btn').addEventListener('click', sendMessage);
+        }
+
+        function sendMessage() {
+            const input = document.getElementById('chat-input');
+            const text = input.value.trim();
+            if (!text) return;
+            
+            // 发送给服务器
+            socket.emit('chatMessage', text);
+            
+            input.value = '';
+            input.blur();
+        }
+
+        function showBubble(playerId, text) {
+            // 如果已有该玩家的气泡，先移除旧的
+            if (playerBubbles[playerId]) {
+                playerBubbles[playerId].element.remove();
+                clearTimeout(playerBubbles[playerId].timeout);
+            }
+
+            const bubble = document.createElement('div');
+            bubble.className = 'bubble';
+            bubble.innerText = text;
+            document.body.appendChild(bubble);
+
+            // 保存引用
+            playerBubbles[playerId] = {
+                element: bubble,
+                timeout: setTimeout(() => {
+                    bubble.remove();
+                    delete playerBubbles[playerId];
+                }, 3000)
+            };
+        }
+
+        function updateBubblesPosition() {
+            // 更新所有存在的的气泡位置
+            Object.keys(playerBubbles).forEach(id => {
+                const bubbleData = playerBubbles[id];
+                let targetMesh = null;
+
+                if (id === myId) {
+                    targetMesh = myPlayer;
+                } else {
+                    targetMesh = otherPlayers[id];
+                }
+
+                if (targetMesh) {
+                    const screenPos = getScreenPosition(targetMesh);
+                    bubbleData.element.style.left = screenPos.x + 'px';
+                    bubbleData.element.style.top = screenPos.y + 'px';
+                }
+            });
+        }
+
+        function getScreenPosition(object3D) {
+            const vector = new THREE.Vector3();
+            vector.setFromMatrixPosition(object3D.matrixWorld);
+            vector.y += 1.5; // 头顶高度
+            vector.project(camera);
+            const x = (vector.x * .5 + .5) * window.innerWidth;
+            const y = (-(vector.y * .5) + .5) * window.innerHeight;
+            return { x, y };
+        }
+
+        function generateForest(count) {
+            const treeMaterial = new THREE.MeshLambertMaterial({ color: 0x228b22 });
+            const trunkMaterial = new THREE.MeshLambertMaterial({ color: 0x8b4513 });
+            for (let i = 0; i < count; i++) {
+                const group = new THREE.Group();
+                const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.3, 1, 8), trunkMaterial);
+                trunk.position.y = 0.5;
+                const leaves = new THREE.Mesh(new THREE.ConeGeometry(1, 2, 8), treeMaterial);
+                leaves.position.y = 1.5;
+                group.add(trunk);
+                group.add(leaves);
+                let x, z;
+                do { x = (Math.random()-0.5)*40; z = (Math.random()-0.5)*40; } 
+                while(Math.abs(x)<3 && Math.abs(z)<3);
+                group.position.set(x, 0, z);
+                scene.add(group);
+            }
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // --- 移动逻辑 (只控制我自己) ---
+            let moved = false;
+            if (keys.w) { myPlayer.position.z -= moveSpeed; moved = true; }
+            if (keys.s) { myPlayer.position.z += moveSpeed; moved = true; }
+            if (keys.a) { myPlayer.position.x -= moveSpeed; moved = true; }
+            if (keys.d) { myPlayer.position.x += moveSpeed; moved = true; }
+
+            if (moved) {
+                // 发送位置给服务器
+                socket.emit('playerMove', {
+                    x: myPlayer.position.x,
+                    z: myPlayer.position.z
+                });
+            }
+
+            // --- 相机跟随 ---
+            const targetCameraPos = myPlayer.position.clone().add(cameraOffset);
+            camera.position.lerp(targetCameraPos, 0.1);
+            camera.lookAt(myPlayer.position);
+
+            // --- 更新气泡位置 ---
+            updateBubblesPosition();
+
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
