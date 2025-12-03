@@ -1,7 +1,25 @@
 // AnimalModels.js - 负责创建逼真的动物模型（增强版）
+// 支持两种模式：1. 代码生成（当前） 2. 外部 GLTF 模型加载
 import * as THREE from 'three';
+import { ModelLoader } from './ModelLoader.js';
 
 export class AnimalModels {
+    static modelLoader = null; // 延迟初始化
+    static useExternalModels = false; // 设置为 true 启用外部模型加载
+    // 单独控制每个动物的模型加载方式
+    static externalModelTypes = ['dog', 'pig', 'cabbage']; // dog, pig, cabbage 使用外部模型
+    
+    static initModelLoader() {
+        if (!this.modelLoader) {
+            try {
+                this.modelLoader = new ModelLoader();
+            } catch (error) {
+                console.warn('ModelLoader 初始化失败，将使用默认模型:', error);
+                this.modelLoader = null;
+            }
+        }
+        return this.modelLoader;
+    }
     static createPig() {
         const group = new THREE.Group();
         
@@ -416,13 +434,94 @@ export class AnimalModels {
         return group;
     }
 
+    // 异步创建模型（支持外部模型加载）
+    static async createAsync(type) {
+        // 如果这个类型配置为使用外部模型
+        if (this.externalModelTypes.includes(type)) {
+            const loader = this.initModelLoader();
+            if (loader) {
+                try {
+                    console.log(`尝试加载外部模型: ${type}`);
+                    const result = await loader.loadLocal(type);
+                    if (result && result.model) {
+                        console.log(`成功加载外部模型: ${type}`);
+                        const model = result.model;
+                        // 自动调整模型大小（如果模型太大或太小）
+                        const box = new THREE.Box3().setFromObject(model);
+                        const size = box.getSize(new THREE.Vector3());
+                        const maxSize = Math.max(size.x, size.y, size.z);
+                        if (maxSize > 3) {
+                            // 模型太大，缩小
+                            const scale = 1 / maxSize;
+                            model.scale.set(scale, scale, scale);
+                            console.log(`模型已缩放: ${scale}`);
+                        } else if (maxSize < 0.5) {
+                            // 模型太小，放大
+                            const scale = 1 / maxSize;
+                            model.scale.set(scale, scale, scale);
+                            console.log(`模型已缩放: ${scale}`);
+                        }
+                        // 返回模型和动画信息
+                        return {
+                            model: model,
+                            animations: result.animations || [],
+                            hasAnimations: result.hasAnimations || false
+                        };
+                    }
+                } catch (error) {
+                    console.warn(`外部模型加载失败，使用默认模型:`, error);
+                }
+            }
+        }
+        // 回退到代码生成的模型（没有动画）
+        return {
+            model: this.create(type),
+            animations: [],
+            hasAnimations: false
+        };
+    }
+
+    // 同步创建模型（当前使用的）
     static create(type) {
         switch(type) {
             case 'pig': return this.createPig();
             case 'rabbit': return this.createRabbit();
             case 'cat': return this.createCat();
             case 'dog': return this.createDog();
+            case 'cabbage': return this.createCabbage();
             default: return this.createPig();
         }
+    }
+    
+    // 创建卷心菜模型（简单的代码生成版本，作为后备）
+    static createCabbage() {
+        const group = new THREE.Group();
+        
+        // 主身体（绿色球体，稍微压扁）
+        const body = new THREE.Mesh(
+            new THREE.SphereGeometry(0.5, 16, 16),
+            new THREE.MeshLambertMaterial({ color: 0x90EE90 })
+        );
+        body.scale.set(1, 0.8, 1);
+        group.add(body);
+        
+        // 添加一些叶子（简单的绿色平面）
+        for (let i = 0; i < 6; i++) {
+            const leaf = new THREE.Mesh(
+                new THREE.CircleGeometry(0.3, 8),
+                new THREE.MeshLambertMaterial({ color: 0x7CFC00, side: THREE.DoubleSide })
+            );
+            const angle = (i / 6) * Math.PI * 2;
+            leaf.position.set(
+                Math.cos(angle) * 0.4,
+                Math.sin(angle) * 0.2 + 0.3,
+                Math.sin(angle) * 0.3
+            );
+            leaf.rotation.x = Math.PI / 4;
+            leaf.rotation.z = angle;
+            group.add(leaf);
+        }
+        
+        return group;
     }
 }

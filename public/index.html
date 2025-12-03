@@ -6,7 +6,12 @@
     <title>森林多人聊天室</title>
     <link rel="stylesheet" href="/css/style.css">
     <script type="importmap">
-        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
     </script>
     <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
 </head>
@@ -20,6 +25,7 @@
                 <div class="avatar-option" data-type="rabbit">🐰 兔子</div>
                 <div class="avatar-option" data-type="cat">🐱 猫咪</div>
                 <div class="avatar-option" data-type="dog">🐶 小狗</div>
+                <div class="avatar-option" data-type="cabbage">🥬 卷心菜</div>
             </div>
             <button id="start-game-btn">进入森林</button>
         </div>

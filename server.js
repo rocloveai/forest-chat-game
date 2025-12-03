@@ -18,6 +18,10 @@ app.get('/', (req, res) => {
 // 格式: { socketId: { x: 0, z: 0, id: 'socketId' } }
 const players = {};
 
+// 存储咬住状态
+// 格式: { cabbageId: { animalId: 'socketId', timer: 2.0 } }
+const catchStates = {};
+
 io.on('connection', (socket) => {
     console.log('新玩家连接:', socket.id);
 
@@ -25,11 +29,16 @@ io.on('connection', (socket) => {
     players[socket.id] = {
         id: socket.id,
         x: 0, 
+        y: 0.5, // 初始 Y 坐标（地面高度）
         z: 0,
         color: Math.random() * 0xffffff,
         name: "Player",
         modelType: "robot",
-        isJoined: false // 标记是否已进入游戏
+        isJoined: false, // 标记是否已进入游戏
+        isCaught: false, // 是否被咬住（卷心菜）
+        caughtBy: null, // 被谁咬住
+        isEating: false, // 是否在吃菜（动物）
+        eatingTarget: null // 正在吃哪个玩家
     };
 
     // 2. 发送当前所有 *已加入游戏* 的玩家给新连接者
@@ -61,10 +70,24 @@ io.on('connection', (socket) => {
     // 4. 监听：玩家移动
     socket.on('playerMove', (movementData) => {
         if (players[socket.id] && players[socket.id].isJoined) {
+            // 如果玩家被咬住（卷心菜），不允许移动
+            if (players[socket.id].isCaught) {
+                return; // 忽略移动请求
+            }
+            
             players[socket.id].x = movementData.x;
             players[socket.id].z = movementData.z;
-            // 广播给其他人
-            socket.broadcast.emit('playerMoved', players[socket.id]);
+            // 更新 Y 坐标（用于同步跳跃）
+            if (movementData.y !== undefined && movementData.y !== null) {
+                players[socket.id].y = movementData.y;
+            }
+            // 广播给其他人（包括 Y 坐标）
+            socket.broadcast.emit('playerMoved', {
+                id: players[socket.id].id,
+                x: players[socket.id].x,
+                y: players[socket.id].y,
+                z: players[socket.id].z
+            });
         }
     });
 
@@ -77,9 +100,102 @@ io.on('connection', (socket) => {
         });
     });
 
-    // 6. 断开连接
+    // 6. 咬住卷心菜
+    socket.on('catchCabbage', (data) => {
+        const { animalId, cabbageId } = data;
+        const actualAnimalId = socket.id; // 发送者的ID
+        
+        // 验证：发送者必须是动物，目标必须是卷心菜
+        if (players[actualAnimalId] && players[cabbageId] && 
+            players[actualAnimalId].modelType !== 'cabbage' &&
+            players[cabbageId].modelType === 'cabbage' &&
+            !players[cabbageId].isCaught) { // 卷心菜没有被咬住
+            
+            // 设置咬住状态
+            players[cabbageId].isCaught = true;
+            players[cabbageId].caughtBy = actualAnimalId;
+            players[actualAnimalId].isEating = true;
+            players[actualAnimalId].eatingTarget = cabbageId;
+            
+            catchStates[cabbageId] = {
+                animalId: actualAnimalId,
+                timer: 2.0
+            };
+            
+            // 广播给所有人
+            io.emit('cabbageCaught', {
+                animalId: actualAnimalId,
+                cabbageId: cabbageId
+            });
+            
+            console.log(`玩家 ${actualAnimalId} 咬住了卷心菜 ${cabbageId}`);
+            
+            // 2秒后自动释放
+            setTimeout(() => {
+                if (catchStates[cabbageId] && catchStates[cabbageId].animalId === actualAnimalId) {
+                    // 释放
+                    players[cabbageId].isCaught = false;
+                    players[cabbageId].caughtBy = null;
+                    players[actualAnimalId].isEating = false;
+                    players[actualAnimalId].eatingTarget = null;
+                    delete catchStates[cabbageId];
+                    
+                    // 广播释放
+                    io.emit('cabbageReleased', {
+                        animalId: actualAnimalId,
+                        cabbageId: cabbageId
+                    });
+                    
+                    console.log(`卷心菜 ${cabbageId} 被释放`);
+                }
+            }, 2000);
+        }
+    });
+    
+    // 7. 释放卷心菜（提前释放，虽然主要是自动释放）
+    socket.on('releaseCabbage', (data) => {
+        const { animalId, cabbageId } = data;
+        const actualAnimalId = socket.id;
+        
+        if (catchStates[cabbageId] && catchStates[cabbageId].animalId === actualAnimalId) {
+            players[cabbageId].isCaught = false;
+            players[cabbageId].caughtBy = null;
+            players[actualAnimalId].isEating = false;
+            players[actualAnimalId].eatingTarget = null;
+            delete catchStates[cabbageId];
+            
+            io.emit('cabbageReleased', {
+                animalId: actualAnimalId,
+                cabbageId: cabbageId
+            });
+        }
+    });
+
+    // 8. 断开连接
     socket.on('disconnect', () => {
         console.log('玩家断开:', socket.id);
+        
+        // 清理咬住状态
+        if (catchStates[socket.id]) {
+            const animalId = catchStates[socket.id].animalId;
+            if (players[animalId]) {
+                players[animalId].isEating = false;
+                players[animalId].eatingTarget = null;
+            }
+            delete catchStates[socket.id];
+        }
+        
+        // 清理被咬住状态
+        for (const [cabbageId, state] of Object.entries(catchStates)) {
+            if (state.animalId === socket.id) {
+                if (players[cabbageId]) {
+                    players[cabbageId].isCaught = false;
+                    players[cabbageId].caughtBy = null;
+                }
+                delete catchStates[cabbageId];
+            }
+        }
+        
         delete players[socket.id];
         io.emit('disconnectPlayer', socket.id);
     });
